@@ -1,0 +1,112 @@
+{
+  "name": "Knowledge Base — Index Documents",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "path": "/documents",
+        "recursive": true,
+        "fileExtensions": "pdf,txt,md"
+      },
+      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "name": "Read Files from /documents",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Text Chunking Node ───────────────────────────────────────────\n// Splits document content into overlapping chunks for better retrieval.\n// Each chunk becomes one vector in the database.\n\nconst items = $input.all();\nconst CHUNK_SIZE = 500;      // characters per chunk\nconst OVERLAP    = 80;       // character overlap between consecutive chunks\n\nconst chunks = [];\n\nfor (const item of items) {\n  const fileName = item.json.fileName ?? item.json.name ?? 'unknown';\n  const rawText  = item.json.data\n    ? Buffer.from(item.json.data, 'base64').toString('utf-8')\n    : (item.json.text ?? item.json.content ?? '');\n\n  // Strip extra whitespace and normalize line breaks\n  const text = rawText.replace(/\\r\\n/g, '\\n').replace(/\\s{3,}/g, ' ').trim();\n\n  if (!text) continue;\n\n  let start = 0;\n  let chunkIndex = 0;\n\n  while (start < text.length) {\n    const end      = Math.min(start + CHUNK_SIZE, text.length);\n    const chunkText = text.slice(start, end).trim();\n\n    if (chunkText.length > 20) {\n      chunks.push({\n        json: {\n          chunkId   : `${fileName}__chunk_${chunkIndex}`,\n          fileName,\n          chunkIndex,\n          text      : chunkText,\n        },\n      });\n      chunkIndex++;\n    }\n\n    start += CHUNK_SIZE - OVERLAP;\n  }\n}\n\nreturn chunks;\n"
+      },
+      "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+      "name": "Extract & Chunk Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"models/text-embedding-004\",\n  \"content\": {\n    \"parts\": [{ \"text\": {{ JSON.stringify($json.text) }} }]\n  }\n}",
+        "options": {}
+      },
+      "id": "d4e5f6a7-b8c9-0123-defa-234567890123",
+      "name": "Generate Embedding (Gemini)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "",
+          "name": "Gemini API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Build Pinecone Vector Object ─────────────────────────────────\n// Merges the Gemini embedding with chunk metadata\n// into the exact JSON structure Pinecone's upsert endpoint expects.\n// NOTE: Gemini text-embedding-004 returns 768-dimensional vectors.\n\nconst embedding = $json.embedding?.values;\n\nif (!Array.isArray(embedding) || embedding.length === 0) {\n  throw new Error('No embedding returned by Gemini for chunk: ' + $('Extract & Chunk Text').item.json.chunkId);\n}\n\nreturn [\n  {\n    json: {\n      vectors: [\n        {\n          id      : $('Extract & Chunk Text').item.json.chunkId,\n          values  : embedding,\n          metadata: {\n            text      : $('Extract & Chunk Text').item.json.text,\n            fileName  : $('Extract & Chunk Text').item.json.fileName,\n            chunkIndex: $('Extract & Chunk Text').item.json.chunkIndex,\n          },\n        },\n      ],\n      namespace: 'knowledge-base',\n    },\n  },\n];\n"
+      },
+      "id": "e5f6a7b8-c9d0-1234-efab-345678901234",
+      "name": "Build Vector Object",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $env.PINECONE_HOST }}/vectors/upsert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "f6a7b8c9-d0e1-2345-fabc-456789012345",
+      "name": "Upsert to Pinecone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "Pinecone API Key"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Read Files from /documents", "type": "main", "index": 0 }]]
+    },
+    "Read Files from /documents": {
+      "main": [[{ "node": "Extract & Chunk Text", "type": "main", "index": 0 }]]
+    },
+    "Extract & Chunk Text": {
+      "main": [[{ "node": "Generate Embedding (Gemini)", "type": "main", "index": 0 }]]
+    },
+    "Generate Embedding (Gemini)": {
+      "main": [[{ "node": "Build Vector Object", "type": "main", "index": 0 }]]
+    },
+    "Build Vector Object": {
+      "main": [[{ "node": "Upsert to Pinecone", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "1"
+}

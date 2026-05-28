@@ -1,0 +1,20 @@
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: knowledge-chatbot-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - GENERIC_TIMEZONE=America/Sao_Paulo
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678}
+      # Allow workflows to read env variables via $env.VAR_NAME
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - N8N_RESTRICT_FILE_ACCESS_TO=/home/node/.n8n-files
+    volumes:
+      - ./documents:/home/node/.n8n-files/documents
+    env_file:
+      - .env
+
+volumes:
+  n8n_data:

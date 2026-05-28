@@ -1,0 +1,258 @@
+{
+  "name": "Knowledge Base — Chatbot (RAG)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9e30600b-42e9-4f2d-a09a-c8ba5a354157",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "chat-endpoint-001"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Extract User Question ────────────────────────────────────────\n// Reads the incoming webhook body and normalises the question field.\n// Accepts both { question } and { message } keys for flexibility.\n\nconst body = $json.body ?? $json;\n\nconst question  = (body.question ?? body.message ?? '').trim();\nconst sessionId = body.session_id ?? 'anonymous';\n\nif (!question) {\n  throw new Error('No question provided in the request body.');\n}\n\nreturn [\n  {\n    json: {\n      question,\n      sessionId,\n    },\n  },\n];\n"
+      },
+      "id": "b32b181f-f577-4952-afc8-7e9529eccd54",
+      "name": "Extract Question",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"models/text-embedding-004\",\n  \"content\": {\n    \"parts\": [{ \"text\": {{ JSON.stringify($json.question) }} }]\n  }\n}",
+        "options": {}
+      },
+      "id": "3daeb689-b1cf-4e35-a561-944c026bff15",
+      "name": "Embed Question (Gemini)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        0
+      ],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "sBVhQbjLETEBHqaH",
+          "name": "Gemini"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://https://knowledge-chatbot-ms9lvsn.svc.aped-4627-b74a.pinecone.io/query",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($json.embedding.values) }},\n  \"topK\": 5,\n  \"namespace\": \"knowledge-base\",\n  \"includeMetadata\": true\n}",
+        "options": {}
+      },
+      "id": "3fcfb418-9b9d-4dee-a955-d7421636e74e",
+      "name": "Query Pinecone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Bo6f8rVRqJxFULel",
+          "name": "Pinecone"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Build RAG Prompt ─────────────────────────────────────────────\n// Assembles retrieved document chunks into a context block,\n// then formats the system instruction + user question for Gemini.\n\nconst pineconeResponse = $json;\nconst question         = $('Extract Question').item.json.question;\n\nconst contextParts = (pineconeResponse.matches ?? []).map((match, i) => {\n  const text     = match.metadata?.text ?? '';\n  const fileName = match.metadata?.fileName ?? 'unknown source';\n  const score    = (match.score ?? 0).toFixed(3);\n  return `[Source ${i + 1} | file: ${fileName} | relevance: ${score}]\\n${text}`;\n});\n\nconst context = contextParts.join('\\n\\n---\\n\\n');\n\nconst systemInstruction = `You are a helpful customer support assistant.\nAnswer the user's question using ONLY the context provided below.\nIf the answer is not found in the context, say: \"I don't have information about that in our knowledge base. Please contact our support team.\"\nDo NOT make up information. Be concise, friendly, and professional.\n\n=== CONTEXT ===\n${context}\n=== END CONTEXT ===`;\n\nreturn [\n  {\n    json: {\n      question,\n      systemInstruction,\n      contextFound: contextParts.length > 0,\n    },\n  },\n];\n"
+      },
+      "id": "4bf10ced-4901-4360-9b38-eca8e798e72b",
+      "name": "Build Context & Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"systemInstruction\": {\n    \"parts\": [{ \"text\": {{ JSON.stringify($json.systemInstruction) }} }]\n  },\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [{ \"text\": {{ JSON.stringify($json.question) }} }]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.2,\n    \"maxOutputTokens\": 600\n  }\n}",
+        "options": {}
+      },
+      "id": "de321d99-4cd7-4f94-9c44-ee67eacbc546",
+      "name": "Call Gemini",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1104,
+        0
+      ],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "sBVhQbjLETEBHqaH",
+          "name": "Gemini"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Extract Answer ───────────────────────────────────────────────\n// Pulls the generated text from the Gemini response.\n// Gemini response structure: candidates[0].content.parts[0].text\n\nconst geminiResponse = $json;\n\nconst answer = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text?.trim()\n  ?? \"I'm sorry, I couldn't generate a response. Please try again.\";\n\nconst model = geminiResponse.modelVersion ?? 'gemini-2.0-flash';\n\nreturn [\n  {\n    json: {\n      answer,\n      model,\n    },\n  },\n];\n"
+      },
+      "id": "8fbde2ea-db2b-4172-86d1-d0f85b93ae27",
+      "name": "Extract Answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1328,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ answer: $json.answer, model: $json.model }) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "id": "1e16b06f-bbcc-44bc-b250-9f0a4bb7a01f",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1552,
+        0
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Question": {
+      "main": [
+        [
+          {
+            "node": "Embed Question (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Question (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Query Pinecone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Pinecone": {
+      "main": [
+        [
+          {
+            "node": "Build Context & Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context & Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini": {
+      "main": [
+        [
+          {
+            "node": "Extract Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Answer": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "16effd78-e42d-43c7-8686-d5a6547ea015",
+  "meta": {
+    "instanceId": "390e5c136f65b01b87962b86a578087c164b24ba79446190bd5bf11a53ccc291"
+  },
+  "id": "ZbdUlB9wF01VJZwL",
+  "tags": []
+}
